@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Raw</title>
+<style>
+*{box-sizing:border-box;margin:0}
+html,body{height:100%;background:#0b0b0d;color:#fff;font:16px system-ui,sans-serif}
+#app{height:100%;display:flex;flex-direction:column;max-width:480px;margin:auto}
+main{flex:1;position:relative;overflow:auto}
+nav{display:flex;border-top:1px solid #222;padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;padding:16px;background:none;border:0;color:#777;font-size:15px}
+nav button.on{color:#fff;font-weight:600}
+#cam{width:100%;height:100%;object-fit:cover;transform:scaleX(-1);transition:filter .25s;background:#000}
+#cam.blur{filter:blur(28px) brightness(.8)}
+.rec{position:absolute;left:0;right:0;bottom:24px;display:flex;flex-direction:column;align-items:center;gap:14px}
+#rb{width:78px;height:78px;border-radius:50%;border:5px solid #fff;background:#e33;transition:.2s}
+#rb.go{border-radius:18px;transform:scale(.7)}
+#bar{position:absolute;top:0;left:0;height:4px;background:#e33;width:0}
+#hint{font-size:13px;opacity:.8;text-shadow:0 1px 4px #000}
+.sheet{position:absolute;inset:0;background:#0b0b0dee;display:none;flex-direction:column;justify-content:center;align-items:center;gap:16px;padding:24px;text-align:center}
+.sheet.on{display:flex}
+.row{display:flex;gap:10px}
+.chip{padding:12px 18px;border-radius:99px;border:1px solid #444;background:none;color:#fff;font-size:15px}
+.chip.on{background:#fff;color:#000}
+.btn{padding:14px 28px;border-radius:99px;border:0;background:#fff;color:#000;font-weight:700;font-size:16px}
+.pad{padding:16px;display:flex;flex-direction:column;gap:12px}
+input{width:100%;padding:13px;border-radius:12px;border:1px solid #333;background:#16161a;color:#fff;font-size:16px}
+.item{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:#16161a;border-radius:12px}
+.item button{padding:8px 14px;border-radius:99px;border:0;background:#fff;color:#000;font-weight:600}
+h3{font-size:13px;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-top:6px}
+#view{position:fixed;inset:0;background:#000;display:none;z-index:9}
+#view video{width:100%;height:100%;object-fit:cover}
+#vt{position:absolute;top:calc(14px + env(safe-area-inset-top));right:16px;font-size:22px;font-weight:700;text-shadow:0 1px 6px #000}
+</style></head><body>
+<div id="app">
+  <main>
+    <section id="t-cam" style="height:100%">
+      <video id="cam" autoplay muted playsinline></video><div id="bar"></div>
+      <div class="rec"><span id="hint">Tap to record · up to 30s · you're blurred while recording</span><button id="rb"></button></div>
+      <div class="sheet" id="sh">
+        <h3 style="margin:0">Disappears after</h3>
+        <div class="row" id="timers"><button class="chip" data-t="5">5s</button><button class="chip on" data-t="10">10s</button><button class="chip" data-t="30">30s</button></div>
+        <button class="btn" id="send">Send to friends</button>
+        <button class="chip" id="trash">Discard</button>
+        <span id="msg" style="font-size:14px;opacity:.8"></span>
+      </div>
+    </section>
+    <section id="t-fr" class="pad" style="display:none">
+      <h3>Invite</h3>
+      <div class="item"><span id="invtxt" style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%"></span><button id="copy">Copy link</button></div>
+      <h3>Find friends</h3>
+      <input id="q" placeholder="Search by name" autocomplete="off">
+      <div id="res" class="pad" style="padding:0"></div>
+      <h3>New videos</h3>
+      <div id="inb" class="pad" style="padding:0"></div>
+      <h3>Friends</h3>
+      <div id="fl" class="pad" style="padding:0"></div>
+    </section>
+  </main>
+  <nav><button id="n-cam" class="on">Camera</button><button id="n-fr">Friends</button></nav>
+</div>
+<div id="view"><video playsinline></video><div id="vt"></div></div>
+<script>
+const $=s=>document.querySelector(s);
+let S=JSON.parse(localStorage.getItem('raw')||'null'),ttl=10,blob=null,stream,mr,chunks=[],tick;
+const api=(p,o)=>fetch('/api/'+p,o).then(r=>r.json());
+const key=()=>'key='+S.key;
+
+async function boot(){
+  if(!S){
+    const name=(prompt('Pick a name your friends will recognize')||'').trim();
+    if(!name)return location.reload();
+    S=await api('join?name='+encodeURIComponent(name));
+    localStorage.setItem('raw',JSON.stringify(S));
+  }
+  const inv=new URLSearchParams(location.search).get('invite');
+  if(inv&&inv!==S.id){await api('add?'+key()+'&id='+inv);history.replaceState(0,'','/');}
+  $('#invtxt').textContent=location.origin+'/?invite='+S.id;
+  startCam();refresh();setInterval(refresh,8000);
+}
+async function startCam(){
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:true});
+    $('#cam').srcObject=stream;
+  }catch(e){$('#hint').textContent='Allow camera + mic to continue'}
+}
+function tab(t){
+  $('#t-cam').style.display=t=='cam'?'block':'none';
+  $('#t-fr').style.display=t=='fr'?'flex':'none';
+  $('#n-cam').classList.toggle('on',t=='cam');$('#n-fr').classList.toggle('on',t=='fr');
+  if(t=='fr')refresh();
+}
+$('#n-cam').onclick=()=>tab('cam');$('#n-fr').onclick=()=>tab('fr');
+
+$('#rb').onclick=()=>{
+  if(mr&&mr.state=='recording')return mr.stop();
+  if(!stream)return startCam();
+  chunks=[];
+  const type=MediaRecorder.isTypeSupported('video/webm')?'video/webm':'video/mp4';
+  mr=new MediaRecorder(stream,{mimeType:type,videoBitsPerSecond:1500000});
+  mr.ondataavailable=e=>e.data.size&&chunks.push(e.data);
+  mr.onstop=()=>{
+    clearInterval(tick);$('#bar').style.width=0;
+    $('#rb').classList.remove('go');$('#cam').classList.remove('blur');
+    blob=new Blob(chunks,{type});$('#sh').classList.add('on');$('#msg').textContent='';
+  };
+  mr.start();$('#rb').classList.add('go');$('#cam').classList.add('blur');
+  const t0=Date.now();
+  tick=setInterval(()=>{
+    const p=(Date.now()-t0)/30000;$('#bar').style.width=Math.min(p,1)*100+'%';
+    if(p>=1)mr.stop();
+  },100);
+};
+document.querySelectorAll('#timers .chip').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#timers .chip').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on');ttl=+b.dataset.t;
+});
+$('#trash').onclick=()=>{blob=null;$('#sh').classList.remove('on')};
+$('#send').onclick=async()=>{
+  $('#msg').textContent='Sending…';
+  const r=await fetch('/api/send?'+key()+'&ttl='+ttl,{method:'POST',headers:{'Content-Type':blob.type},body:blob}).then(r=>r.json());
+  if(!r.sent){$('#msg').textContent='Add a friend first';return}
+  blob=null;$('#sh').classList.remove('on');
+};
+
+async function refresh(){
+  const m=await api('me?'+key());if(m.error)return;
+  $('#fl').innerHTML=m.friends.map(f=>`<div class="item">${esc(f.name)}</div>`).join('')||'<span style="opacity:.5">No friends yet. Share your invite link.</span>';
+  $('#inb').innerHTML=m.inbox.map(v=>`<div class="item">${esc(v.name)} · ${v.ttl}s<button onclick="watch('${v.vid}',${v.ttl})">Watch</button></div>`).join('')||'<span style="opacity:.5">Nothing new</span>';
+  document.title=m.inbox.length?`(${m.inbox.length}) Raw`:'Raw';
+}
+const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let st;$('#q').oninput=e=>{clearTimeout(st);st=setTimeout(async()=>{
+  const q=e.target.value.trim();if(!q){$('#res').innerHTML='';return}
+  const r=await api('search?'+key()+'&q='+encodeURIComponent(q));
+  $('#res').innerHTML=r.map(u=>`<div class="item">${esc(u.name)}<button onclick="add('${u.id}')">Add</button></div>`).join('')||'<span style="opacity:.5">No one found</span>';
+},250)};
+async function add(id){await api('add?'+key()+'&id='+id);$('#q').value='';$('#res').innerHTML='';refresh()}
+$('#copy').onclick=async()=>{try{await navigator.clipboard.writeText($('#invtxt').textContent);$('#copy').textContent='Copied'}catch(e){prompt('Copy:',$('#invtxt').textContent)}setTimeout(()=>$('#copy').textContent='Copy link',1500)};
+
+async function watch(vid,t){
+  const r=await fetch('/api/watch?'+key()+'&vid='+vid);
+  if(!r.ok)return refresh();
+  const url=URL.createObjectURL(await r.blob()),v=$('#view video');
+  v.src=url;$('#view').style.display='block';v.play();
+  let left=t;$('#vt').textContent=left;
+  const iv=setInterval(()=>{$('#vt').textContent=--left;if(left<=0)close()},1000);
+  function close(){clearInterval(iv);v.pause();v.removeAttribute('src');URL.revokeObjectURL(url);$('#view').style.display='none';refresh()}
+  v.onended=close;$('#view').onclick=close;
+}
+boot();
+</script></body></html>
