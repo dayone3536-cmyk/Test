@@ -33,6 +33,7 @@ const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x'), p = u.pathname, q = u.searchParams;
   const json = (o, c = 200) => { res.writeHead(c, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
   if (p === '/') { res.writeHead(200, { 'Content-Type': 'text/html' }); return fs.createReadStream(__dirname + '/index.html').pipe(res); }
+  if (p === '/ping') { res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end('ok'); } // for cron keep-alive
   const me = byKey(q.get('key'));
 
   if (p === '/api/join') {
