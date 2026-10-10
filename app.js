@@ -3,11 +3,15 @@
 const http = require('http'), fs = require('fs'), crypto = require('crypto');
 const SB = (process.env.SUPABASE_URL || '').trim().replace(/\/+$/, ''); // strips trailing slash
 const KEY = (process.env.SUPABASE_SERVICE_KEY || '').trim();
+const invites = Object.create(null); // video invites: code -> {from, buf, type, exp}
 const users = {}, inbox = {}; // users/friends are mirrored in Supabase; videos stay in memory on purpose
 const rid = () => crypto.randomBytes(6).toString('hex');
 const byKey = k => Object.values(users).find(u => u.key === k);
 const pub = u => ({ id: u.id, name: u.name });
 const TTLS = [30, 120, 360]; // minutes a video stays available
+// a valid invite code is single-use: taking it deletes it
+const take = (c, not) => { const i = invites[c]; if (!i || i.exp < Date.now() || i.from === not) return null; delete invites[c]; return users[i.from] || null; };
+const peek = c => { const i = invites[c]; return i && i.exp > Date.now() ? i : null; };
 
 // sb_secret_ keys are not JWTs, so only send Authorization for legacy eyJ... keys
 const sb = (path, body) => fetch(SB + '/rest/v1/' + path, {
@@ -37,7 +41,15 @@ const server = http.createServer(async (req, res) => {
     const id = rid(), key = rid() + rid();
     users[id] = { id, name, key, friends: new Set() }; inbox[id] = [];
     if (SB && KEY) await sb('users', { id, name, key }).catch(e => console.error('save user failed', e.message));
+    const inv = take(q.get('c')); // arrived through a video invite: friends both ways, instantly
+    if (inv) { users[id].friends.add(inv.id); inv.friends.add(id); if (SB && KEY) await sb('friends', [{ a: id, b: inv.id }, { a: inv.id, b: id }]).catch(e => console.error('save friends failed', e.message)); }
     return json({ id, key, name });
+  }
+  if (p === '/api/invite_info') { const i = peek(q.get('c')); return i ? json({ name: users[i.from].name }) : json({ error: 'gone' }, 404); }
+  if (p === '/api/invite_clip') {
+    const i = peek(q.get('c')); if (!i) return json({ error: 'gone' }, 404);
+    res.writeHead(200, { 'Content-Type': i.type, 'Content-Length': i.buf.length, 'Cache-Control': 'no-store' });
+    return res.end(i.buf);
   }
   if (!me) return json({ error: 'auth' }, 401);
 
@@ -57,6 +69,20 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/add') {
     const f = users[q.get('id')];
     if (!f || f.id === me.id) return json({ error: 'nope' }, 400);
+    me.friends.add(f.id); f.friends.add(me.id);
+    if (SB && KEY) await sb('friends', [{ a: me.id, b: f.id }, { a: f.id, b: me.id }]).catch(e => console.error('save friends failed', e.message));
+    return json({ ok: 1, friend: pub(f) });
+  }
+  if (p === '/api/invite' && req.method === 'POST') {
+    if (Object.values(invites).filter(i => i.from === me.id).length >= 5) return json({ error: 'too many open invites' }, 429);
+    const type = req.headers['content-type'] || 'video/webm', b = []; let n = 0;
+    req.on('data', c => { n += c.length; if (n > 8e6) req.destroy(); else b.push(c); });
+    req.on('end', () => { const c = rid() + rid(); invites[c] = { from: me.id, buf: Buffer.concat(b), type, exp: Date.now() + 864e5 }; json({ c }); });
+    return;
+  }
+  if (p === '/api/claim') { // already has an account and opened someone's invite
+    const f = take(q.get('c'), me.id);
+    if (!f) return json({ error: 'gone' }, 400);
     me.friends.add(f.id); f.friends.add(me.id);
     if (SB && KEY) await sb('friends', [{ a: me.id, b: f.id }, { a: f.id, b: me.id }]).catch(e => console.error('save friends failed', e.message));
     return json({ ok: 1, friend: pub(f) });
@@ -83,7 +109,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 // expired videos are deleted every minute
-setInterval(() => { const now = Date.now(); for (const k in inbox) inbox[k] = inbox[k].filter(v => v.exp > now); }, 6e4);
+setInterval(() => { const now = Date.now(); for (const k in inbox) inbox[k] = inbox[k].filter(v => v.exp > now); for (const c in invites) if (invites[c].exp < now) delete invites[c]; }, 6e4);
 
 (async () => {
   if (SB && KEY) {

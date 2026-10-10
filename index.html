@@ -33,6 +33,9 @@ h3{font-size:13px;color:#888;font-weight:600;text-transform:uppercase;letter-spa
 #view{position:fixed;inset:0;background:#000;display:none;z-index:9}
 #view video{width:100%;height:100%;object-fit:cover}
 #vt{position:absolute;top:calc(14px + env(safe-area-inset-top));right:16px;font-size:14px;opacity:.8;text-shadow:0 1px 6px #000}
+#land{position:fixed;inset:0;background:#000;z-index:20;display:none;flex-direction:column;justify-content:center;align-items:center;gap:20px;padding:24px;text-align:center}
+#land video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none}
+#lt,#lgo{position:relative;z-index:2}#lt{font-size:22px;font-weight:700;text-shadow:0 1px 8px #000}
 </style></head><body>
 <div id="app">
   <div id="me"></div>
@@ -57,30 +60,53 @@ h3{font-size:13px;color:#888;font-weight:600;text-transform:uppercase;letter-spa
       <input id="q" placeholder="Search by name" autocomplete="off">
       <div id="res" class="pad" style="padding:0"></div>
       <h3>Invite</h3>
-      <div class="item"><span id="invtxt" style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%"></span><button id="copy">Copy link</button></div>
+      <div class="item"><span style="font-size:13px;opacity:.8">Record 8s. They watch it first.</span><button id="mkinv">Record</button></div>
+      <div class="item" id="linkrow" style="display:none"><span id="invtxt" style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%"></span><button id="copy">Copy link</button></div>
     </section>
   </main>
   <nav><button id="n-cam" class="on">Camera</button><button id="n-fr">Friends</button></nav>
 </div>
+<div id="land"><video id="lv" playsinline></video><div id="lt"></div><button class="btn" id="lgo"></button></div>
 <div id="view"><video playsinline></video><div id="vt">Tap to close</div></div>
 <script>
 const $=s=>document.querySelector(s);
+const HINT=$('#hint').textContent;let lim=30000,invMode=false;
 let S=JSON.parse(localStorage.getItem('raw')||'null'),ttl=120,blob=null,stream,mr,chunks=[],tick;
 const api=(p,o)=>fetch('/api/'+p,o).then(r=>r.json());
 const key=()=>'key='+S.key;
 
+function landing(c){return new Promise(async res=>{
+  const info=await api('invite_info?c='+encodeURIComponent(c)).catch(()=>({}));
+  if(!info.name)return res(null);
+  const L=$('#land'),v=$('#lv'),go=$('#lgo'),t=$('#lt');
+  L.style.display='flex';t.textContent=info.name+' sent you something';go.textContent='Tap to watch';
+  go.onclick=async()=>{
+    go.style.display='none';t.textContent='';
+    const r=await fetch('/api/invite_clip?c='+encodeURIComponent(c));
+    if(!r.ok){L.style.display='none';return res(null)}
+    const url=URL.createObjectURL(await r.blob());let fin=false;
+    const done=()=>{
+      if(fin)return;fin=true;v.pause();v.style.display='none';URL.revokeObjectURL(url);
+      t.textContent='Send one back to '+info.name;go.textContent='Record your reply';go.style.display='';
+      go.onclick=()=>{L.style.display='none';res(info)};
+    };
+    v.src=url;v.style.display='block';v.onended=done;v.onclick=done;v.play().catch(done);
+  };
+})}
+function endInv(){invMode=false;lim=30000;$('#timers').style.display='';$('#send').textContent='Send to friends';$('#hint').textContent=HINT}
 async function boot(){
+  const c=new URLSearchParams(location.search).get('c');
+  const info=c?await landing(c):null;
   if(!S){
     const name=(prompt('Pick a name your friends will recognize')||'').trim();
     if(!name)return location.reload();
-    S=await api('join?name='+encodeURIComponent(name));
+    S=await api('join?name='+encodeURIComponent(name)+(info?'&c='+encodeURIComponent(c):''));
     localStorage.setItem('raw',JSON.stringify(S));
-  }
+  }else if(info){await api('claim?'+key()+'&c='+encodeURIComponent(c))}
+  if(c)history.replaceState(0,'','/');
   $('#me').textContent='You: '+S.name;
-  const inv=new URLSearchParams(location.search).get('invite');
-  if(inv&&inv!==S.id){await api('add?'+key()+'&id='+inv);history.replaceState(0,'','/');}
-  $('#invtxt').textContent=location.origin+'/?invite='+S.id;
   tab('cam');startCam();refresh();setInterval(refresh,8000);
+  if(info)$('#hint').textContent='Send one back to '+info.name+' · tap to record';
 }
 async function startCam(){
   try{
@@ -94,7 +120,7 @@ function tab(t){
   $('#n-cam').classList.toggle('on',t=='cam');$('#n-fr').classList.toggle('on',t=='fr');
   if(t=='fr')refresh();
 }
-$('#n-cam').onclick=()=>tab('cam');$('#n-fr').onclick=()=>tab('fr');
+$('#n-cam').onclick=()=>{endInv();tab('cam')};$('#n-fr').onclick=()=>{endInv();tab('fr')};
 
 $('#rb').onclick=()=>{
   if(mr&&mr.state=='recording')return mr.stop();
@@ -111,7 +137,7 @@ $('#rb').onclick=()=>{
   mr.start();$('#rb').classList.add('go');$('#cam').classList.add('blur');
   const t0=Date.now();
   tick=setInterval(()=>{
-    const p=(Date.now()-t0)/30000;$('#bar').style.width=Math.min(p,1)*100+'%';
+    const p=(Date.now()-t0)/lim;$('#bar').style.width=Math.min(p,1)*100+'%';
     if(p>=1)mr.stop();
   },100);
 };
@@ -120,8 +146,18 @@ document.querySelectorAll('#timers .chip').forEach(b=>b.onclick=()=>{
   b.classList.add('on');ttl=+b.dataset.t;
 });
 $('#trash').onclick=()=>{blob=null;$('#sh').classList.remove('on')};
+$('#mkinv').onclick=()=>{invMode=true;lim=8000;$('#timers').style.display='none';$('#send').textContent='Make invite link';tab('cam');$('#hint').textContent='Record your invite · 8s · tap to start'};
 $('#send').onclick=async()=>{
   $('#msg').textContent='Sending…';
+  if(invMode){
+    const r=await fetch('/api/invite?'+key(),{method:'POST',headers:{'Content-Type':blob.type},body:blob}).then(r=>r.json()).catch(()=>({}));
+    if(!r.c){$('#msg').textContent='Try again';return}
+    const link=location.origin+'/?c='+r.c;
+    blob=null;$('#sh').classList.remove('on');endInv();
+    $('#invtxt').textContent=link;$('#linkrow').style.display='flex';tab('fr');
+    try{if(navigator.share)await navigator.share({text:'Watch this',url:link});else await navigator.clipboard.writeText(link)}catch(e){}
+    return;
+  }
   const r=await fetch('/api/send?'+key()+'&ttl='+ttl,{method:'POST',headers:{'Content-Type':blob.type},body:blob}).then(r=>r.json());
   if(!r.sent){$('#msg').textContent='Add a friend first';return}
   blob=null;$('#sh').classList.remove('on');
