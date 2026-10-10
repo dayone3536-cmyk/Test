@@ -58,6 +58,8 @@ h3{font-size:13px;color:#888;font-weight:600;text-transform:uppercase;letter-spa
       <div id="fl" class="pad" style="padding:0"></div>
       <h3>Videos</h3>
       <div id="inb" class="pad" style="padding:0"></div>
+      <h3>Reactions</h3>
+      <div id="rxl" class="pad" style="padding:0"></div>
       <h3>Find friends</h3>
       <input id="q" placeholder="Search by name" autocomplete="off">
       <div id="res" class="pad" style="padding:0"></div>
@@ -75,12 +77,20 @@ h3{font-size:13px;color:#888;font-weight:600;text-transform:uppercase;letter-spa
 <button class="btn" id="go">Watch</button>
 <button class="chip" id="no">Cancel</button>
 </div>
+<div id="rv" class="sheet" style="position:fixed;z-index:16">
+<h3 style="margin:0">Your reaction · last 5s</h3>
+<video id="rvv" playsinline loop style="width:70%;max-height:50%;border-radius:16px;background:#000;transform:scaleX(-1)"></video>
+<button class="btn" id="rvs">Send reaction</button>
+<button class="chip" id="rvx">Delete</button>
+<span id="rvm" style="font-size:14px;opacity:.8"></span>
+</div>
 <div id="view"><video playsinline></video><div id="vt">Tap to close</div></div>
 <script>
 const $=s=>document.querySelector(s);
 const HINT=$('#hint').textContent;let lim=30000,invMode=false;
 let RX=localStorage.getItem('rx')!=='0',pend=null; // reaction on/off, remembered on this phone
 let face=localStorage.getItem('face')==='environment'?'environment':'user'; // which camera: user = front, environment = back
+let rt0=0,recDur=0,RXC=null; // recording start time, clip length in seconds, reaction waiting to be sent
 let FC=0; // friend count: decides between "send to friends" and "get share link"
 let S=JSON.parse(localStorage.getItem('raw')||'null'),ttl=120,blob=null,stream,mr,chunks=[],tick;
 const api=(p,o)=>fetch('/api/'+p,o).then(r=>r.json());
@@ -150,6 +160,7 @@ $('#rb').onclick=()=>{
   mr=new MediaRecorder(stream,{mimeType:type,videoBitsPerSecond:1500000});
   mr.ondataavailable=e=>e.data.size&&chunks.push(e.data);
   mr.onstop=()=>{
+    recDur=Math.round((Date.now()-rt0)/1000);
     clearInterval(tick);$('#bar').style.width=0;
     $('#rb').classList.remove('go');$('#cam').classList.remove('blur');
     blob=new Blob(chunks,{type});$('#sh').classList.add('on');$('#msg').textContent='';
@@ -157,7 +168,7 @@ $('#rb').onclick=()=>{
     if(!invMode){$('#send').textContent=FC?'Send to friends':'Get share link';$('#timers').style.display=FC?'':'none'}
   };
   mr.start();$('#rb').classList.add('go');if(face==='user')$('#cam').classList.add('blur');
-  const t0=Date.now();
+  rt0=Date.now();const t0=rt0;
   tick=setInterval(()=>{
     const p=(Date.now()-t0)/lim;$('#bar').style.width=Math.min(p,1)*100+'%';
     if(p>=1)mr.stop();
@@ -181,7 +192,7 @@ $('#send').onclick=async()=>{
     try{if(navigator.share)await navigator.share({text:'Watch this',url:link});else await navigator.clipboard.writeText(link)}catch(e){}
     return;
   }
-  const r=await fetch('/api/send?'+key()+'&ttl='+ttl,{method:'POST',headers:{'Content-Type':blob.type},body:blob}).then(r=>r.json()).catch(()=>({}));
+  const r=await fetch('/api/send?'+key()+'&ttl='+ttl+'&d='+recDur,{method:'POST',headers:{'Content-Type':blob.type},body:blob}).then(r=>r.json()).catch(()=>({}));
   if(r.error==='auth')return dead();
   if(!r.sent){$('#msg').textContent=r.error==='no friends'?'Add a friend first':'Try again';return}
   blob=null;$('#sh').classList.remove('on');
@@ -194,8 +205,9 @@ async function refresh(){
   if(m.error)return;
   FC=m.friends.length;
   $('#fl').innerHTML=m.friends.map(f=>`<div class="item">${esc(f.name)}</div>`).join('')||'<span style="opacity:.5">No friends yet. Search for a name below.</span>';
+  $('#rxl').innerHTML=(m.reacts||[]).map(x=>`<div class="item"><span>${esc(x.name)} reacted</span><button onclick="playRx('${x.rid}')">Watch once</button></div>`).join('')||'<span style="opacity:.5">No reactions yet</span>';
   $('#inb').innerHTML=m.inbox.map(v=>`<div class="item"><span>${esc(v.name)} · ${fmt(v.left)} left${v.seen?' · watched':''}</span><button onclick="watch('${v.vid}')">${v.seen?'Replay':'Watch'}</button></div>`).join('')||'<span style="opacity:.5">Nothing new</span>';
-  const n=m.inbox.filter(v=>!v.seen).length;
+  const n=m.inbox.filter(v=>!v.seen).length+(m.reacts||[]).length;
   document.title=n?`(${n}) Raw`:'Raw';
 }
 const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -209,12 +221,69 @@ async function add(id){await api('add?'+key()+'&id='+id);$('#q').value='';$('#re
 $('#copy').onclick=async()=>{try{await navigator.clipboard.writeText($('#invtxt').textContent);$('#copy').textContent='Copied'}catch(e){prompt('Copy:',$('#invtxt').textContent)}setTimeout(()=>$('#copy').textContent='Copy link',1500)};
 
 function watch(vid){pend=vid;$('#pre').classList.add('on')}
+async function rxOpen(){
+  try{
+    if(stream)stream.getTracks().forEach(t=>t.stop());
+    return await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:true});
+  }catch(e){return null}
+}
+function rxStart(rs){
+  const type=MediaRecorder.isTypeSupported('video/webm')?'video/webm':'video/mp4';
+  const m=new MediaRecorder(rs,{mimeType:type,videoBitsPerSecond:1000000});
+  m.ch=[];m.rtype=type;m.ondataavailable=e=>e.data.size&&m.ch.push(e.data);
+  m.start();return m;
+}
+const rxStop=m=>new Promise(res=>{m.onstop=()=>res(new Blob(m.ch,{type:m.rtype}));m.stop()});
+function rxReview(clip,vid){
+  RXC={blob:clip,vid:vid};$('#rvm').textContent='';
+  const v=$('#rvv');v.src=URL.createObjectURL(clip);
+  $('#rv').classList.add('on');v.play().catch(()=>{});
+}
+function rxclose(){
+  const v=$('#rvv');v.pause();if(v.src)URL.revokeObjectURL(v.src);v.removeAttribute('src');
+  RXC=null;$('#rv').classList.remove('on');
+}
+$('#rvx').onclick=rxclose;
+$('#rvs').onclick=async()=>{
+  if(!RXC)return;
+  $('#rvm').textContent='Sending…';
+  const r=await fetch('/api/react?'+key()+'&vid='+RXC.vid,{method:'POST',headers:{'Content-Type':RXC.blob.type},body:RXC.blob}).then(r=>r.json()).catch(()=>({}));
+  if(r.error==='auth')return dead();
+  if(!r.ok){$('#rvm').textContent=r.error==='already sent'?'Already sent':'Try again';return}
+  rxclose();
+};
 async function play(vid){
   const r=await fetch('/api/watch?'+key()+'&vid='+vid);
   if(!r.ok)return refresh();
+  const dur=+(r.headers.get('X-Dur')||0);
   const url=URL.createObjectURL(await r.blob()),v=$('#view video');
-  v.src=url;$('#view').style.display='block';v.play();
-  function close(){v.pause();v.removeAttribute('src');URL.revokeObjectURL(url);$('#view').style.display='none';refresh()}
+  const rs=RX?await rxOpen():null; // viewer's front camera, only when reaction is on
+  let m=null,done=false;
+  v.src=url;$('#view').style.display='block';
+  v.ontimeupdate=()=>{ // start recording when the last 5 seconds begin
+    if(!rs||m)return;
+    const d=dur||(isFinite(v.duration)?v.duration:0);
+    if(v.currentTime>=Math.max(0,d-5))m=rxStart(rs);
+  };
+  v.play();
+  async function close(keep){
+    if(done)return;done=true;
+    v.ontimeupdate=null;v.pause();v.removeAttribute('src');URL.revokeObjectURL(url);
+    $('#view').style.display='none';
+    let clip=null;
+    if(m){const b=await rxStop(m);if(keep)clip=b}
+    if(rs){rs.getTracks().forEach(t=>t.stop());startCam()}
+    refresh();
+    if(clip)rxReview(clip,vid);
+  }
+  v.onended=()=>close(true);$('#view').onclick=()=>close(false);
+}
+async function playRx(rid){ // a friend's reaction: watch once, then it is gone
+  const r=await fetch('/api/react_watch?'+key()+'&rid='+rid);
+  if(!r.ok)return refresh();
+  const url=URL.createObjectURL(await r.blob()),v=$('#view video');
+  v.ontimeupdate=null;v.src=url;$('#view').style.display='block';v.play();
+  const close=()=>{v.pause();v.removeAttribute('src');URL.revokeObjectURL(url);$('#view').style.display='none';refresh()};
   v.onended=close;$('#view').onclick=close;
 }
 function rxui(){$('#rx1').classList.toggle('on',RX);$('#rx0').classList.toggle('on',!RX)}

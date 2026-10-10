@@ -4,7 +4,8 @@ const http = require('http'), fs = require('fs'), crypto = require('crypto');
 const SB = (process.env.SUPABASE_URL || '').trim().replace(/\/+$/, ''); // strips trailing slash
 const KEY = (process.env.SUPABASE_SERVICE_KEY || '').trim();
 const invites = Object.create(null); // video invites: code -> {from, buf, type, exp}
-const users = {}, inbox = {}; // users/friends are mirrored in Supabase; videos stay in memory on purpose
+const users = {}, inbox = {}, reactions = {}; // users/friends are mirrored in Supabase; videos stay in memory on purpose
+const rxs = id => reactions[id] || (reactions[id] = []); // reactions waiting for each user, view once
 const rid = () => crypto.randomBytes(6).toString('hex');
 const byKey = k => Object.values(users).find(u => u.key === k);
 const pub = u => ({ id: u.id, name: u.name });
@@ -60,7 +61,8 @@ const server = http.createServer(async (req, res) => {
       ...pub(me),
       friends: [...me.friends].map(i => pub(users[i])),
       inbox: inbox[me.id].filter(v => v.exp > now)
-        .map(v => ({ vid: v.vid, name: v.name, left: Math.max(1, Math.ceil((v.exp - now) / 6e4)), seen: !!v.seen }))
+        .map(v => ({ vid: v.vid, name: v.name, left: Math.max(1, Math.ceil((v.exp - now) / 6e4)), seen: !!v.seen })),
+      reacts: rxs(me.id).filter(r => r.exp > now).map(r => ({ rid: r.rid, name: r.name }))
     });
   }
   if (p === '/api/search') { // empty query lists up to 10 people you haven't added
@@ -94,8 +96,8 @@ const server = http.createServer(async (req, res) => {
     const b = []; let n = 0;
     req.on('data', c => { n += c.length; if (n > 40e6) req.destroy(); else b.push(c); });
     req.on('end', () => {
-      const buf = Buffer.concat(b), now = Date.now();
-      me.friends.forEach(f => inbox[f].push({ vid: rid(), from: me.id, name: me.name, ttl, buf, type, t: now, exp: now + ttl * 6e4 }));
+      const buf = Buffer.concat(b), now = Date.now(), d = Math.max(0, Math.min(60, +q.get('d') || 0));
+      me.friends.forEach(f => inbox[f].push({ vid: rid(), from: me.id, name: me.name, ttl, buf, type, d, t: now, exp: now + ttl * 6e4 }));
       json({ sent: me.friends.size });
     });
     return;
@@ -104,14 +106,35 @@ const server = http.createServer(async (req, res) => {
     const v = inbox[me.id].find(v => v.vid === q.get('vid') && v.exp > Date.now());
     if (!v) return json({ error: 'gone' }, 404);
     v.seen = true;
-    res.writeHead(200, { 'Content-Type': v.type, 'Content-Length': v.buf.length, 'Cache-Control': 'no-store' });
+    res.writeHead(200, { 'Content-Type': v.type, 'Content-Length': v.buf.length, 'Cache-Control': 'no-store', 'X-Dur': String(v.d || 0) });
     return res.end(v.buf);
+  }
+  if (p === '/api/react' && req.method === 'POST') { // viewer sends back the last 5s of their reaction
+    const v = inbox[me.id].find(v => v.vid === q.get('vid') && v.exp > Date.now());
+    if (!v) { req.resume(); return json({ error: 'gone' }, 404); }
+    if (v.reacted) { req.resume(); return json({ error: 'already sent' }, 409); }
+    const type = req.headers['content-type'] || 'video/webm', b = []; let n = 0;
+    req.on('data', c => { n += c.length; if (n > 10e6) req.destroy(); else b.push(c); });
+    req.on('end', () => {
+      if (!users[v.from]) return json({ error: 'gone' }, 404);
+      v.reacted = true;
+      rxs(v.from).push({ rid: rid(), from: me.id, name: me.name, buf: Buffer.concat(b), type, exp: Date.now() + 864e5 });
+      json({ ok: 1 });
+    });
+    return;
+  }
+  if (p === '/api/react_watch') { // view once: the reaction is deleted the moment it is sent out
+    const list = rxs(me.id), i = list.findIndex(r => r.rid === q.get('rid') && r.exp > Date.now());
+    if (i < 0) return json({ error: 'gone' }, 404);
+    const r = list.splice(i, 1)[0];
+    res.writeHead(200, { 'Content-Type': r.type, 'Content-Length': r.buf.length, 'Cache-Control': 'no-store' });
+    return res.end(r.buf);
   }
   json({ error: '404' }, 404);
 });
 
 // expired videos are deleted every minute
-setInterval(() => { const now = Date.now(); for (const k in inbox) inbox[k] = inbox[k].filter(v => v.exp > now); for (const c in invites) if (invites[c].exp < now) delete invites[c]; }, 6e4);
+setInterval(() => { const now = Date.now(); for (const k in inbox) inbox[k] = inbox[k].filter(v => v.exp > now); for (const c in invites) if (invites[c].exp < now) delete invites[c]; for (const k in reactions) reactions[k] = reactions[k].filter(r => r.exp > now); }, 6e4);
 
 (async () => {
   if (SB && KEY) {
