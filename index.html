@@ -13,13 +13,15 @@ nav{display:flex;border-top:1px solid #222;padding-bottom:env(safe-area-inset-bo
 nav button{flex:1;padding:16px;background:none;border:0;color:#777;font-size:15px}
 nav button.on{color:#fff;font-weight:600}
 #cam{width:100%;height:100%;object-fit:cover;transform:scaleX(-1);transition:filter .25s;background:#000}
+#cam.back{transform:none}
 #cam.blur{filter:blur(28px) brightness(.8)}
+#flip{position:absolute;top:calc(10px + env(safe-area-inset-top));right:14px;z-index:2;width:44px;height:44px;border-radius:50%;border:0;background:#0008;color:#fff;font-size:22px}
 .rec{position:absolute;left:0;right:0;bottom:24px;display:flex;flex-direction:column;align-items:center;gap:14px}
 #rb{width:78px;height:78px;border-radius:50%;border:5px solid #fff;background:#e33;transition:.2s}
 #rb.go{border-radius:18px;transform:scale(.7)}
 #bar{position:absolute;top:0;left:0;height:4px;background:#e33;width:0}
 #hint{font-size:13px;opacity:.8;text-shadow:0 1px 4px #000}
-.sheet{position:absolute;inset:0;background:#0b0b0dee;display:none;flex-direction:column;justify-content:center;align-items:center;gap:16px;padding:24px;text-align:center}
+.sheet{position:absolute;z-index:3;inset:0;background:#0b0b0dee;display:none;flex-direction:column;justify-content:center;align-items:center;gap:16px;padding:24px;text-align:center}
 .sheet.on{display:flex}
 .row{display:flex;gap:10px}
 .chip{padding:12px 18px;border-radius:99px;border:1px solid #444;background:none;color:#fff;font-size:15px}
@@ -41,7 +43,7 @@ h3{font-size:13px;color:#888;font-weight:600;text-transform:uppercase;letter-spa
   <div id="me"></div>
   <main>
     <section id="t-cam" style="height:100%">
-      <video id="cam" autoplay muted playsinline></video><div id="bar"></div>
+      <video id="cam" autoplay muted playsinline></video><div id="bar"></div><button id="flip" aria-label="Flip camera">&#x21BB;</button>
       <div class="rec"><span id="hint">Tap to record · up to 30s · you're blurred while recording</span><button id="rb"></button></div>
       <div class="sheet" id="sh">
         <h3 style="margin:0">Deleted after</h3>
@@ -78,6 +80,7 @@ h3{font-size:13px;color:#888;font-weight:600;text-transform:uppercase;letter-spa
 const $=s=>document.querySelector(s);
 const HINT=$('#hint').textContent;let lim=30000,invMode=false;
 let RX=localStorage.getItem('rx')!=='0',pend=null; // reaction on/off, remembered on this phone
+let face=localStorage.getItem('face')==='environment'?'environment':'user'; // which camera: user = front, environment = back
 let FC=0; // friend count: decides between "send to friends" and "get share link"
 let S=JSON.parse(localStorage.getItem('raw')||'null'),ttl=120,blob=null,stream,mr,chunks=[],tick;
 const api=(p,o)=>fetch('/api/'+p,o).then(r=>r.json());
@@ -119,10 +122,18 @@ async function boot(){
 }
 async function startCam(){
   try{
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:true});
+    if(stream)stream.getTracks().forEach(t=>t.stop());
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:face}},audio:true});
     $('#cam').srcObject=stream;
+    $('#cam').classList.toggle('back',face==='environment');
   }catch(e){$('#hint').textContent='Allow camera + mic to continue'}
 }
+$('#flip').onclick=async()=>{
+  if(mr&&mr.state=='recording')return;
+  face=face==='user'?'environment':'user';
+  localStorage.setItem('face',face);
+  await startCam();
+};
 function tab(t){
   $('#t-cam').style.display=t=='cam'?'block':'none';
   $('#t-fr').style.display=t=='fr'?'flex':'none';
@@ -145,7 +156,7 @@ $('#rb').onclick=()=>{
     // no friends yet: skip the pointless upload-to-friends and offer a share link instead
     if(!invMode){$('#send').textContent=FC?'Send to friends':'Get share link';$('#timers').style.display=FC?'':'none'}
   };
-  mr.start();$('#rb').classList.add('go');$('#cam').classList.add('blur');
+  mr.start();$('#rb').classList.add('go');if(face==='user')$('#cam').classList.add('blur');
   const t0=Date.now();
   tick=setInterval(()=>{
     const p=(Date.now()-t0)/lim;$('#bar').style.width=Math.min(p,1)*100+'%';
