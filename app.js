@@ -77,7 +77,7 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/invite' && req.method === 'POST') {
     if (Object.values(invites).filter(i => i.from === me.id).length >= 5) return json({ error: 'too many open invites' }, 429);
     const type = req.headers['content-type'] || 'video/webm', b = []; let n = 0;
-    req.on('data', c => { n += c.length; if (n > 8e6) req.destroy(); else b.push(c); });
+    req.on('data', c => { n += c.length; if (n > 40e6) req.destroy(); else b.push(c); });
     req.on('end', () => { const c = rid() + rid(); invites[c] = { from: me.id, buf: Buffer.concat(b), type, exp: Date.now() + 864e5 }; json({ c }); });
     return;
   }
@@ -89,6 +89,7 @@ const server = http.createServer(async (req, res) => {
     return json({ ok: 1, friend: pub(f) });
   }
   if (p === '/api/send' && req.method === 'POST') {
+    if (!me.friends.size) { req.resume(); return json({ error: 'no friends' }, 400); }
     const ttl = TTLS.includes(+q.get('ttl')) ? +q.get('ttl') : 120, type = req.headers['content-type'] || 'video/webm';
     const b = []; let n = 0;
     req.on('data', c => { n += c.length; if (n > 40e6) req.destroy(); else b.push(c); });

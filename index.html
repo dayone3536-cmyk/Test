@@ -71,6 +71,7 @@ h3{font-size:13px;color:#888;font-weight:600;text-transform:uppercase;letter-spa
 <script>
 const $=s=>document.querySelector(s);
 const HINT=$('#hint').textContent;let lim=30000,invMode=false;
+let FC=0; // friend count: decides between "send to friends" and "get share link"
 let S=JSON.parse(localStorage.getItem('raw')||'null'),ttl=120,blob=null,stream,mr,chunks=[],tick;
 const api=(p,o)=>fetch('/api/'+p,o).then(r=>r.json());
 const key=()=>'key='+S.key;
@@ -133,6 +134,8 @@ $('#rb').onclick=()=>{
     clearInterval(tick);$('#bar').style.width=0;
     $('#rb').classList.remove('go');$('#cam').classList.remove('blur');
     blob=new Blob(chunks,{type});$('#sh').classList.add('on');$('#msg').textContent='';
+    // no friends yet: skip the pointless upload-to-friends and offer a share link instead
+    if(!invMode){$('#send').textContent=FC?'Send to friends':'Get share link';$('#timers').style.display=FC?'':'none'}
   };
   mr.start();$('#rb').classList.add('go');$('#cam').classList.add('blur');
   const t0=Date.now();
@@ -149,9 +152,9 @@ $('#trash').onclick=()=>{blob=null;$('#sh').classList.remove('on')};
 $('#mkinv').onclick=()=>{invMode=true;lim=8000;$('#timers').style.display='none';$('#send').textContent='Make invite link';tab('cam');$('#hint').textContent='Record your invite · 8s · tap to start'};
 $('#send').onclick=async()=>{
   $('#msg').textContent='Sending…';
-  if(invMode){
+  if(invMode||FC===0){
     const r=await fetch('/api/invite?'+key(),{method:'POST',headers:{'Content-Type':blob.type},body:blob}).then(r=>r.json()).catch(()=>({}));
-    if(!r.c){$('#msg').textContent='Try again';return}
+    if(!r.c){$('#msg').textContent=r.error||'Try again';return}
     const link=location.origin+'/?c='+r.c;
     blob=null;$('#sh').classList.remove('on');endInv();
     $('#invtxt').textContent=link;$('#linkrow').style.display='flex';tab('fr');
@@ -166,6 +169,7 @@ $('#send').onclick=async()=>{
 const fmt=m=>m>=60?Math.ceil(m/60)+'h':m+'m';
 async function refresh(){
   const m=await api('me?'+key());if(m.error)return;
+  FC=m.friends.length;
   $('#fl').innerHTML=m.friends.map(f=>`<div class="item">${esc(f.name)}</div>`).join('')||'<span style="opacity:.5">No friends yet. Search for a name below.</span>';
   $('#inb').innerHTML=m.inbox.map(v=>`<div class="item"><span>${esc(v.name)} · ${fmt(v.left)} left${v.seen?' · watched':''}</span><button onclick="watch('${v.vid}')">${v.seen?'Replay':'Watch'}</button></div>`).join('')||'<span style="opacity:.5">Nothing new</span>';
   const n=m.inbox.filter(v=>!v.seen).length;
